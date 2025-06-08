@@ -32,6 +32,17 @@ FORM_HTML = """
 </form>
 """
 
+# app.py  (add this just below FORM_HTML)
+@app.before_first_request
+def init_db_and_whitelist():
+    with app.app_context():
+        db.create_all()
+        for e in config.WHITELIST:
+            if not Client.query.get(e):
+                db.session.add(Client(email=e))
+        db.session.commit()
+
+
 @app.route("/", methods=["GET", "POST"])
 def index():
     message = ""
