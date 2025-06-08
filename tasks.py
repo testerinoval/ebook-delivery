@@ -1,60 +1,34 @@
-# tasks.py
-"""
-Background job executed by the RQ worker.
+# tasks.py  (detached-instance bug fixed)
 
-Flow:
-1) Log request → status = processing
-2) Ask Telegram bot for the book
-   • If the bot returns a list, send the first /book… command
-3) Download the file
-4) Upload to Google Drive
-5) Email the client
-6) Update DB status (sent / missing)
-"""
-
-import os
-import time
+import os, time
 from pathlib import Path
 
 from models import db, RequestLog
 import config
-
 from telegram_client import client as tg
 from google_drive import upload_and_share
 from email_sender import send_email
-
-# -- bring in the Flask app for application-context handling --------------
 from app import app as flask_app
 
 
-# ------------------------------------------------------------------------
-def sanitize_filename(title: str, author: str, ext: str) -> str:
-    """Create a safe, short filename and append your signature."""
+def sanitize_filename(title, author, ext):
     base = f"{title}_{author}".replace(" ", "_")
     safe = "".join(c for c in base if c.isalnum() or c == "_")[:50]
     return f"{safe}_YourName.{ext}"
 
 
-# ------------------------------------------------------------------------
 def process_book_request(email, title, author, file_format=None):
-    # -- 1 ▸ mark request as “processing” ---------------------------------
+    # 1) create row, capture id
     with flask_app.app_context():
-        req = RequestLog(
-            email=email,
-            book_title=title,
-            author_name=author,
-            status="processing",
-        )
-        db.session.add(req)
-        db.session.commit()
+        req = RequestLog(email=email, book_title=title,
+                         author_name=author, status="processing")
+        db.session.add(req); db.session.commit()
+        req_id = req.id
 
-    # -- 2 ▸ ask the Telegram bot ----------------------------------------
-    query_text = f"{title} - {author}"
+    # 2) ask Telegram bot
     tg.loop.run_until_complete(
-        tg.send_message(config.BOOK_BOT_USERNAME, query_text)
+        tg.send_message(config.BOOK_BOT_USERNAME, f"{title} - {author}")
     )
-
-    # wait for bot’s first reply (list or file)
     file_msg = None
     start = time.time()
     while time.time() - start < 30:
@@ -63,84 +37,59 @@ def process_book_request(email, title, author, file_format=None):
         )
         for m in msgs:
             if m.file or "/book" in m.raw_text:
-                file_msg = m
-                break
-        if file_msg:
-            break
+                file_msg = m; break
+        if file_msg: break
         time.sleep(2)
 
-    # -- 2b ▸ if we got a list, request the first file -------------------
+    # 2b) if list, send first /book…
     if file_msg and not file_msg.file:
-        first_cmd = None
-        for tok in file_msg.raw_text.split():
-            if tok.startswith("/book"):
-                first_cmd = tok.strip()
-                break
-
-        if first_cmd:
+        cmd = next((t for t in file_msg.raw_text.split() if t.startswith("/book")), None)
+        if cmd:
             tg.loop.run_until_complete(
-                tg.send_message(config.BOOK_BOT_USERNAME, first_cmd)
+                tg.send_message(config.BOOK_BOT_USERNAME, cmd)
             )
-            # wait for the actual file
             start = time.time()
-            while time.time() - start < 30:
+            while time.time() - start < 30 and not (file_msg and file_msg.file):
                 msgs = tg.loop.run_until_complete(
                     tg.get_messages(config.BOOK_BOT_USERNAME, limit=3)
                 )
                 for m in msgs:
                     if m.file:
-                        file_msg = m
-                        break
-                if file_msg and file_msg.file:
-                    break
+                        file_msg = m; break
+                if file_msg and file_msg.file: break
                 time.sleep(2)
 
-    # -- 3 ▸ if still no file, mark missing ------------------------------
+    # 3) missing?
     if not (file_msg and file_msg.file):
-        send_email(
-            config.ADMIN_EMAIL,
-            f"Missing book: {title}",
-            f"{email} requested “{title}” by {author} — not found automatically.",
-        )
-        send_email(
-            email,
-            f"We’re still searching: {title}",
-            "Hi,\nWe couldn’t locate your book automatically; "
-            "we’ll email you as soon as it’s available.",
-        )
+        send_email(config.ADMIN_EMAIL,
+                   f"Missing book: {title}",
+                   f"{email} requested “{title}” by {author} — not found.")
+        send_email(email,
+                   f"We’re still searching: {title}",
+                   "We’ll email you once we locate your book.")
         with flask_app.app_context():
-            req.status = "missing"
+            RequestLog.query.get(req_id).status = "missing"
             db.session.commit()
         return
 
-    # -- 4 ▸ download the file -------------------------------------------
+    # 4) download
     ext = file_msg.file.ext or (file_format or "pdf")
-    temp_dir = Path("temp")
-    temp_dir.mkdir(exist_ok=True)
-    local_path = temp_dir / f"{req.id}.{ext}"
-    tg.loop.run_until_complete(file_msg.download(media=local_path))
+    temp = Path("temp"); temp.mkdir(exist_ok=True)
+    local = temp / f"{req_id}.{ext}"
+    tg.loop.run_until_complete(file_msg.download(media=local))
 
-    # -- 5 ▸ rename, upload, share ---------------------------------------
-    clean_name = sanitize_filename(title, author, ext)
-    drive_link = upload_and_share(
-        local_path,
-        clean_name,
-        config.GOOGLE_DRIVE_FOLDER_ID
-    )
+    # 5) upload
+    clean = sanitize_filename(title, author, ext)
+    link  = upload_and_share(local, clean, config.GOOGLE_DRIVE_FOLDER_ID)
 
-    # -- 6 ▸ email the client -------------------------------------------
-    send_email(
-        email,
-        f"Your eBook is ready: {title}",
-        f"Hello,\n\nHere is your book:\n{drive_link}\n\nEnjoy!",
-    )
+    # 6) email client
+    send_email(email,
+               f"Your eBook is ready: {title}",
+               f"Hello,\n\nHere is your book:\n{link}\n\nEnjoy!")
 
-    # -- 7 ▸ mark as sent & cleanup --------------------------------------
+    # 7) mark sent & cleanup
     with flask_app.app_context():
-        req.status = "sent"
+        RequestLog.query.get(req_id).status = "sent"
         db.session.commit()
-
-    try:
-        local_path.unlink(missing_ok=True)
-    except Exception:
-        pass
+    try: local.unlink(missing_ok=True)
+    except Exception: pass
