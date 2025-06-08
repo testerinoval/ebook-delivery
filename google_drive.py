@@ -3,13 +3,16 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 import config
+import json
+from google.oauth2 import service_account
+import os
 
 SCOPES = ['https://www.googleapis.com/auth/drive']
 
 # Authenticate with service account
-creds = service_account.Credentials.from_service_account_file(
-    config.SERVICE_ACCOUNT_FILE, scopes=SCOPES
-)
+# Load credentials from environment variable
+service_account_info = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])
+creds = service_account.Credentials.from_service_account_info(service_account_info)
 drive_service = build('drive', 'v3', credentials=creds)
 
 def upload_and_share(file_path, file_name, folder_id=None):
