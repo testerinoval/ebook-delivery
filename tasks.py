@@ -76,7 +76,7 @@ def process_book_request(email, title, author, file_format=None):
     ext = file_msg.file.ext or (file_format or "pdf")
     temp = Path("temp"); temp.mkdir(exist_ok=True)
     local = temp / f"{req_id}.{ext}"
-    tg.loop.run_until_complete(file_msg.download(media=local))
+    tg.loop.run_until_complete(file_msg.download_media(file=local))
 
     # 5) upload
     clean = sanitize_filename(title, author, ext)
