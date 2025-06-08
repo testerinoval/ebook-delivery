@@ -1,38 +1,22 @@
-import mimetypes
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
-import config
-import json
-from google.oauth2 import service_account
 import os
 
-SCOPES = ['https://www.googleapis.com/auth/drive']
+def upload_and_share(local_path, drive_name, folder_id):
+    creds = service_account.Credentials.from_service_account_file(
+        os.path.join(os.path.dirname(__file__), "service-account.json"),
+        scopes=["https://www.googleapis.com/auth/drive"]
+    )
+    service = build("drive", "v3", credentials=creds)
 
-# Authenticate with service account
-# Load credentials from environment variable
-service_account_info = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])
-creds = service_account.Credentials.from_service_account_info(service_account_info)
-drive_service = build('drive', 'v3', credentials=creds)
+    file_metadata = {"name": drive_name, "parents": [folder_id]}
+    media = {"mimeType": "application/pdf", "body": open(local_path, "rb")}
+    file = service.files().create(body=file_metadata,
+                                  media_body=media,
+                                  fields="id").execute()
 
-def upload_and_share(file_path, file_name, folder_id=None):
-    parents = [folder_id or config.GOOGLE_DRIVE_FOLDER_ID]
-    file_metadata = {'name': file_name, 'parents': parents}
-
-    mime_type = mimetypes.guess_type(file_path)[0] or 'application/octet-stream'
-    media = MediaFileUpload(file_path, mimetype=mime_type)
-
-    # Upload
-    file = drive_service.files().create(
-        body=file_metadata, media_body=media, fields='id'
-    ).execute()
-    file_id = file.get('id')
-
-    # Make public
-    drive_service.permissions().create(
-        fileId=file_id,
-        body={'type': 'anyone', 'role': 'reader'}
-    ).execute()
-
-    # Return a direct download link
-    return f"https://drive.google.com/uc?id={file_id}&export=download"
+    # make public
+    service.permissions().create(fileId=file["id"],
+                                 body={"role": "reader", "type": "anyone"}).execute()
+    link = f"https://drive.google.com/uc?id={file['id']}&export=download"
+    return link

@@ -1,11 +1,12 @@
 Flask
 Flask-SQLAlchemy
-telethon
+gunicorn             # production WSGI server
+python-dotenv        # loads .env
 redis
 rq
+telethon
 google-api-python-client
 google-auth
 google-auth-oauthlib
 google-auth-httplib2
 requests
-gunicorn

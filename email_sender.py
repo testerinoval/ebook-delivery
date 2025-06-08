@@ -1,15 +1,17 @@
-import smtplib
+import smtplib, ssl, os
 from email.message import EmailMessage
-import config
 
-def send_email(to_email, subject, body):
+EMAIL = os.getenv("EMAIL_ADDRESS", "labthekidd@gmail.com")
+PW    = os.getenv("EMAIL_PASSWORD", "miqigdmwkatnkqyg")
+
+def send_email(to, subject, body):
     msg = EmailMessage()
-    msg['From'] = config.EMAIL_ADDRESS
-    msg['To']   = to_email
-    msg['Subject'] = subject
+    msg["From"] = EMAIL
+    msg["To"] = to
+    msg["Subject"] = subject
     msg.set_content(body)
 
-    with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
-        smtp.login(config.EMAIL_ADDRESS, config.EMAIL_PASSWORD)
+    ctx = ssl.create_default_context()
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ctx) as smtp:
+        smtp.login(EMAIL, PW)
         smtp.send_message(msg)
-    print(f"✅ Email sent to {to_email}")

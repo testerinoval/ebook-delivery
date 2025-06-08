@@ -1,18 +1,17 @@
-# Byte-compiled / optimized files
+# ――― existing entries ―――
 __pycache__/
 *.py[cod]
 
-# Virtual environment
 venv/
-*.env
+*.env          # catches .env and .prod.env, etc.
 
-# SQLite database
 *.db
-
-# Mac files
 .DS_Store
 
-# Token / Credential files
 token.pickle
 credentials.json
 service-account.json
+
+# ――― add these ―――
+session_name.session   # Telethon session file
+temp/                  # scratch downloads (optional)
