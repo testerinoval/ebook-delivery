@@ -1,7 +1,6 @@
 from dotenv import load_dotenv
 import os
-
-load_dotenv()                       # Optional: loads .env if present
+load_dotenv()
 
 from flask import Flask, request, render_template_string
 from models import db, Client, RequestLog
@@ -13,8 +12,16 @@ import config
 app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///requests.db"
 app.config["SECRET_KEY"] = config.SECRET_KEY
-
 db.init_app(app)
+
+# ---------- DB + whitelist initialisation (runs on import) ----------
+with app.app_context():
+    db.create_all()
+    for e in config.WHITELIST:
+        if not Client.query.get(e):
+            db.session.add(Client(email=e))
+    db.session.commit()
+# --------------------------------------------------------------------
 
 redis_url  = os.getenv("REDIS_URL", "redis://localhost:6379")
 redis_conn = Redis.from_url(redis_url)
@@ -31,16 +38,6 @@ FORM_HTML = """
   <button type="submit">Submit</button>
 </form>
 """
-
-# app.py  (add this just below FORM_HTML)
-@app.before_first_request
-def init_db_and_whitelist():
-    with app.app_context():
-        db.create_all()
-        for e in config.WHITELIST:
-            if not Client.query.get(e):
-                db.session.add(Client(email=e))
-        db.session.commit()
 
 
 @app.route("/", methods=["GET", "POST"])
