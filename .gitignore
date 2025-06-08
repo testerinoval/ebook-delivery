@@ -1,0 +1,18 @@
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+venv/
+*.env
+
+# SQLite database
+*.db
+
+# Mac files
+.DS_Store
+
+# Token / Credential files
+token.pickle
+credentials.json
+service-account.json

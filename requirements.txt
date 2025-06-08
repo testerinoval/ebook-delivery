@@ -1,0 +1,10 @@
+Flask
+Flask-SQLAlchemy
+telethon
+redis
+rq
+google-api-python-client
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+requests
