@@ -1,19 +1,6 @@
-# tasks.py
-"""
-Background job executed by the RQ worker.
-
-Steps
-1.  Log request as “processing”.
-2.  Ask Telegram bot for the book.
-3.  Download   → rename → upload to Google Drive.
-4.  Email client (or admin if missing).
-5.  Update DB status.
-"""
-
-import os
-import time
+# tasks.py  – first English file, any format
+import os, time
 from pathlib import Path
-
 from models import db, RequestLog
 import config
 
@@ -21,95 +8,70 @@ from telegram_client import client as tg
 from google_drive import upload_and_share
 from email_sender import send_email
 
+TMP_DIR = Path("temp"); TMP_DIR.mkdir(exist_ok=True)
 
-# ──────────────────────────────────────────
-def sanitize_filename(title: str, author: str, ext: str) -> str:
+def sanitize(title, author, ext):
     base = f"{title}_{author}".replace(" ", "_")
     safe = "".join(c for c in base if c.isalnum() or c == "_")[:50]
     return f"{safe}_YourName.{ext}"
 
-
-def process_book_request(email, title, author, file_format=None):
-    """
-    The function RQ enqueues; runs inside the worker process.
-    A *lazy import* of `app` is done inside the function to avoid
-    circular-import problems when the web app imports tasks.py.
-    """
-    # Lazy import to obtain the Flask app *only when the job runs*
+def _ctx():            # lazy import to avoid circular refs
     from app import app as flask_app
+    return flask_app
+def _in_app(fn):       # decorator: run inside Flask app-context
+    def wrapper(*a, **kw):
+        with _ctx().app_context():
+            return fn(*a, **kw)
+    return wrapper
+@_in_app
+def _status(req, s):
+    req.status = s; db.session.commit()
 
-    # ── 1 ▸ mark “processing” ───────────────────────────────────────────
-    with flask_app.app_context():
-        req = RequestLog(
-            email=email,
-            book_title=title,
-            author_name=author,
-            status="processing",
-        )
-        db.session.add(req)
-        db.session.commit()
+# ───────────────────────────────────────────────────────────
+def process_book_request(email, title, author, *_):
+    from app import db               # local to dodge circulars
+    with _ctx().app_context():
+        req = RequestLog(email=email, book_title=title,
+                         author_name=author, status="processing")
+        db.session.add(req); db.session.commit()
 
-    # ── 2 ▸ ask Telegram bot ────────────────────────────────────────────
+    # 1 ▸ ask for “english”
+    qtxt = f"{title} - {author} english"
     tg.loop.run_until_complete(
-        tg.send_message(config.BOOK_BOT_USERNAME, f"{title} - {author}")
-    )
+        tg.send_message(config.BOOK_BOT_USERNAME, qtxt))
 
+    # 2 ▸ wait ≤60 s for first file
     file_msg = None
     start = time.time()
-    while time.time() - start < 30:
+    while time.time() - start < 60:
         msgs = tg.loop.run_until_complete(
-            tg.get_messages(config.BOOK_BOT_USERNAME, limit=5)
-        )
+            tg.get_messages(config.BOOK_BOT_USERNAME, limit=8))
         for m in msgs:
-            if m.file:
-                file_msg = m
-                break
-        if file_msg:
-            break
+            if m.file: file_msg = m; break
+        if file_msg: break
         time.sleep(2)
 
-    # ── 3 ▸ not found → notify & exit ───────────────────────────────────
-    if not file_msg:
-        send_email(
-            config.ADMIN_EMAIL,
-            f"Missing book: {title}",
-            f"{email} requested “{title}” by {author} — not found.",
-        )
-        send_email(
-            email,
-            f"We’re still searching: {title}",
-            "Hi,\nWe couldn’t find your book automatically; "
-            "we’ll email you as soon as we locate it.",
-        )
-        with flask_app.app_context():
-            req.status = "missing"
-            db.session.commit()
-        return
+    if not file_msg:                       # still nothing
+        send_email(config.ADMIN_EMAIL,
+                   f"Missing book: {title}",
+                   f"{email} requested “{title}” – bot returned no file.")
+        _status(req, "missing"); return
 
-    # ── 4 ▸ download the file ───────────────────────────────────────────
-    ext = file_msg.file.ext or (file_format or "pdf")
-    temp_dir = Path("temp")
-    temp_dir.mkdir(exist_ok=True)
-    local_path = temp_dir / f"{req.id}.{ext}"
-    tg.loop.run_until_complete(file_msg.download(media=local_path))
+    # 3 ▸ download
+    ext   = (file_msg.file.ext or "").lstrip(".") or "bin"
+    local = TMP_DIR / f"{req.id}.{ext}"
+    tg.loop.run_until_complete(file_msg.download(media=local))
 
-    # ── 5 ▸ rename, upload, share ───────────────────────────────────────
-    clean_name  = sanitize_filename(title, author, ext)
-    public_link = upload_and_share(local_path, clean_name, config.GOOGLE_DRIVE_FOLDER_ID)
+    # 4 ▸ upload
+    drive_name = sanitize(title, author, ext)
+    link       = upload_and_share(local, drive_name,
+                                  config.GOOGLE_DRIVE_FOLDER_ID)
 
-    # ── 6 ▸ email the client ────────────────────────────────────────────
-    send_email(
-        email,
-        f"Your eBook is ready: {title}",
-        f"Hello,\n\nHere is your book:\n{public_link}\n\nEnjoy!",
-    )
+    # 5 ▸ mail user
+    send_email(email,
+               f"Your eBook is ready: {title}",
+               f"Hello,\n\nHere is your book ({ext.upper()}):\n{link}\n\nEnjoy!")
 
-    # ── 7 ▸ mark “sent” & cleanup ───────────────────────────────────────
-    with flask_app.app_context():
-        req.status = "sent"
-        db.session.commit()
-
-    try:
-        local_path.unlink(missing_ok=True)
-    except Exception:
-        pass
+    _status(req, "sent")
+    try: local.unlink(missing_ok=True)
+    except Exception: pass
