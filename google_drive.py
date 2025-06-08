@@ -1,22 +1,48 @@
+# google_drive.py
+
+from dotenv import load_dotenv
+import os, json
+
+# 1) load from .env (on VM) or from Render's env
+load_dotenv()
+
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-import os
+from googleapiclient.http import MediaFileUpload
 
-def upload_and_share(local_path, drive_name, folder_id):
-    creds = service_account.Credentials.from_service_account_file(
-        os.path.join(os.path.dirname(__file__), "service-account.json"),
-        scopes=["https://www.googleapis.com/auth/drive"]
+# 2) grab the JSON text from the environment
+sa_json = os.getenv("SERVICE_ACCOUNT_JSON")
+if not sa_json:
+    raise RuntimeError("SERVICE_ACCOUNT_JSON must be set")
+
+info = json.loads(sa_json)
+
+# 3) create credentials & Drive service
+SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+service = build("drive", "v3", credentials=creds)
+
+
+def upload_and_share(local_path, name, folder_id):
+    """
+    Uploads a file at `local_path` into `folder_id` on Drive,
+    makes it publicly readable, and returns a download link.
+    """
+    media = MediaFileUpload(str(local_path), resumable=True)
+    metadata = {"name": name, "parents": [folder_id]}
+
+    created = (
+        service.files()
+               .create(body=metadata, media_body=media, fields="id")
+               .execute()
     )
-    service = build("drive", "v3", credentials=creds)
+    file_id = created.get("id")
 
-    file_metadata = {"name": drive_name, "parents": [folder_id]}
-    media = {"mimeType": "application/pdf", "body": open(local_path, "rb")}
-    file = service.files().create(body=file_metadata,
-                                  media_body=media,
-                                  fields="id").execute()
+    # share publicly
+    service.permissions().create(
+        fileId=file_id,
+        body={"role": "reader", "type": "anyone"},
+    ).execute()
 
-    # make public
-    service.permissions().create(fileId=file["id"],
-                                 body={"role": "reader", "type": "anyone"}).execute()
-    link = f"https://drive.google.com/uc?id={file['id']}&export=download"
-    return link
+    # direct‐download link
+    return f"https://drive.google.com/uc?id={file_id}&export=download"
